@@ -8,6 +8,35 @@
 #include "params/DbrcCache.hh"
 #include "sim/clocked_object.hh"
 
+typedef struct
+{
+  bool valid;
+  uint32_t index;
+} BTH_entry;
+
+typedef struct 
+{
+  bool valid;
+  bool dirty;
+  bool lock;
+  uint8_t level;
+  bool parent_valid;
+  uint8_t reutilization;
+} DUT_entry;
+
+typedef struct
+{
+  uint32_t tag;
+  uint8_t parent_table;
+} TT_entry;
+
+typedef struct
+{
+  uint8_t* data;
+  DUT_entry dut;
+  TT_entry tt;
+} DBA_entry;
+
 /**
  * A very simple cache object. Has a fully-associative data store with random
  * replacement.
@@ -241,6 +270,10 @@ class DbrcCache : public ClockedObject
     /// Number of blocks in the cache (size of cache / block size)
     const unsigned capacity;
 
+    const unsigned target_BTH;
+    const unsigned num_BTH;
+    const unsigned L0T_offset;
+
     /// Instantiation of the CPU-side port
     std::vector<CPUSidePort> cpuPorts;
 
@@ -260,8 +293,11 @@ class DbrcCache : public ClockedObject
     /// For tracking the miss latency
     Tick missTime;
 
-    /// An incredibly simple cache storage. Maps block addresses to data
-    std::unordered_map<Addr, uint8_t*> cacheStore;
+    /// TLB buffer. Unordered map since fully-associative
+    std::unordered_map<uint32_t, uint32_t> cache_TLB;
+
+    BTH_entry* cache_L0T;
+    DBA_entry* cache_DBA;
 
     /// Cache statistics
   protected:
@@ -279,6 +315,8 @@ class DbrcCache : public ClockedObject
     /** constructor
      */
     DbrcCache(const DbrcCacheParams &params);
+
+    ~DbrcCache();
 
     /**
      * Get a port with a given name and index. This is used at

@@ -9,6 +9,8 @@ DbrcCache::DbrcCache(const DbrcCacheParams &params) :
     latency(params.latency),
     blockSize(params.system->cacheLineSize()),
     capacity(params.size / blockSize),
+    num_BTH(params.num_BTH),
+    target_BTH(params.target_BTH),
     memPort(params.name + ".mem_side", this),
     blocked(false), originalPacket(nullptr), waitingPortId(-1), stats(this)
 {
@@ -19,6 +21,18 @@ DbrcCache::DbrcCache(const DbrcCacheParams &params) :
     for (int i = 0; i < params.port_cpu_side_connection_count; ++i) {
         cpuPorts.emplace_back(name() + csprintf(".cpu_side[%d]", i), i, this);
     }
+
+    L0T_offset = blockSize;
+    for(size_t i = 1; i < num_BTH; i++)
+        L0T_offset *= (blockSize/2);
+    cache_L0T = new BTH_entry[params.system->memSize()/(L0T_offset)];
+    cache_DBA = new DBA_entry[capacity];
+}
+
+DbrcCache::~DbrcCache()
+{
+    delete [] cache_L0T;
+    delete [] cache_DBA;
 }
 
 Port &
@@ -158,6 +172,9 @@ DbrcCache::MemSidePort::recvRangeChange()
     owner->sendRangeChange();
 }
 
+/**
+ * @brief Handle requests for a blocking cache. Delay by cache latency.
+ */
 bool
 DbrcCache::handleRequest(PacketPtr pkt, int port_id)
 {
@@ -238,6 +255,9 @@ void DbrcCache::sendResponse(PacketPtr pkt)
     }
 }
 
+/**
+ * @brief Functional implentation of cache. Respond if hit, forward if miss.
+ */
 void
 DbrcCache::handleFunctional(PacketPtr pkt)
 {
@@ -248,6 +268,9 @@ DbrcCache::handleFunctional(PacketPtr pkt)
     }
 }
 
+/**
+ * @brief Craete response packet if hit. Format cache line request and forward if miss.
+ */
 void
 DbrcCache::accessTiming(PacketPtr pkt)
 {
@@ -306,26 +329,59 @@ DbrcCache::accessTiming(PacketPtr pkt)
     }
 }
 
+/**
+ * @brief Check if address exists in cache. Get/Set data if in cache.
+ */
 bool
 DbrcCache::accessFunctional(PacketPtr pkt)
 {
+    uint32_t DBA_index = 0;
     Addr block_addr = pkt->getBlockAddr(blockSize);
-    auto it = cacheStore.find(block_addr);
+    // TLB Lookup
+    auto it = cache_TLB.find(block_addr);
     if (it != cacheStore.end()) {
+        DBA_index = it->second;
+    }
+    else
+    {
+        if(cache_L0T[block_addr/L0T_offset].valid)
+            DBA_index = cache_L0T[block_addr/L0T_offset].index;
+        else
+            return false;
+
+        uint32_t offset = blockSize/2;
+        for (size_t i = 1; i < num_BTH; i++) {
+            BTH_entry* entries = *(BTH_entry*)(cache_DBA[DBA_index].data);
+            if(entries[block_addr/(L0T_offset/(offset))].valid)
+                DBA_index = entries[(block_addr/(L0T_offset/(offset))) & (blockSize/2-1)].index;
+                if(cache_DBA[DBA_index].dut.reutilization < 32)
+                    cache_DBA[DBA_index].dut.reutilization++;
+            else
+                return false;
+            offset *= blockSize/2;
+        }
+    }
+
+    if(cache_DBA[DBA_index].dut.valid && cache_DBA[DBA_index].dut.tag == block_addr/blockSize)
+    {
         if (pkt->isWrite()) {
             // Write the data into the block in the cache
-            pkt->writeDataToBlock(it->second, blockSize);
+            pkt->writeDataToBlock(cache_DBA[DBA_index].data, blockSize);
         } else if (pkt->isRead()) {
             // Read the data out of the cache block into the packet
-            pkt->setDataFromBlock(it->second, blockSize);
+            pkt->setDataFromBlock(cache_DBA[DBA_index].data, blockSize);
         } else {
             panic("Unknown packet type!");
         }
         return true;
     }
+
     return false;
 }
 
+/**
+ * @brief Insert data in to cache after memory response. Handle write-back and replacement policy.
+ */
 void
 DbrcCache::insert(PacketPtr pkt)
 {
