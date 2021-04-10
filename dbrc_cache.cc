@@ -22,6 +22,8 @@ DbrcCache::DbrcCache(const DbrcCacheParams &params) :
         cpuPorts.emplace_back(name() + csprintf(".cpu_side[%d]", i), i, this);
     }
 
+    VBIR = 0;
+
     L0T_offset = blockSize;
     for(size_t i = 1; i < num_BTH; i++)
         L0T_offset *= (blockSize/2);
@@ -329,6 +331,22 @@ DbrcCache::accessTiming(PacketPtr pkt)
     }
 }
 
+uint32_t DbrcCache::GetLowestLevelIndex(Addr block_addr)
+{
+    uint32_t DBA_index = 0;
+    uint32_t offset = blockSize/2;
+    for (size_t i = 1; i < num_BTH; i++) {
+        BTH_entry* entries = *(BTH_entry*)(cache_DBA[DBA_index].data);
+        if(entries[block_addr/(L0T_offset/(offset))].valid)
+            DBA_index = entries[(block_addr/(L0T_offset/(offset))) & (blockSize/2-1)].index;
+            if(cache_DBA[DBA_index].dut.reutilization < 32)
+                cache_DBA[DBA_index].dut.reutilization++;
+        else
+            return DBA_index;
+        offset *= blockSize/2;
+    }
+}
+
 /**
  * @brief Check if address exists in cache. Get/Set data if in cache.
  */
@@ -338,7 +356,7 @@ DbrcCache::accessFunctional(PacketPtr pkt)
     uint32_t DBA_index = 0;
     Addr block_addr = pkt->getBlockAddr(blockSize);
     // TLB Lookup
-    auto it = cache_TLB.find(block_addr);
+    auto it = cache_TLB.find(block_addr/blockSize);
     if (it != cacheStore.end()) {
         DBA_index = it->second;
     }
@@ -349,17 +367,16 @@ DbrcCache::accessFunctional(PacketPtr pkt)
         else
             return false;
 
-        uint32_t offset = blockSize/2;
-        for (size_t i = 1; i < num_BTH; i++) {
-            BTH_entry* entries = *(BTH_entry*)(cache_DBA[DBA_index].data);
-            if(entries[block_addr/(L0T_offset/(offset))].valid)
-                DBA_index = entries[(block_addr/(L0T_offset/(offset))) & (blockSize/2-1)].index;
-                if(cache_DBA[DBA_index].dut.reutilization < 32)
-                    cache_DBA[DBA_index].dut.reutilization++;
-            else
-                return false;
-            offset *= blockSize/2;
+        
+
+        if (cache_TLB.size > TLB_size)
+        {
+            it = cache_TLB.begin();
+            cache_TLB.erase(it);
         }
+        
+        // TODO: implement storing BTH or data in TLB
+        cache_TLB[block_addr/blockSize] = DBA_index;
     }
 
     if(cache_DBA[DBA_index].dut.valid && cache_DBA[DBA_index].dut.tag == block_addr/blockSize)
@@ -381,16 +398,62 @@ DbrcCache::accessFunctional(PacketPtr pkt)
 
 /**
  * @brief Insert data in to cache after memory response. Handle write-back and replacement policy.
+ * 
+ * @details 
+ *      1.  b = Select a DBA victim block
+ *      2.  Make the BTH entry in level N point to b
+ *      3.  if (b's DUT entry bits V==true and PV==true)
+ *      3.1     Invalidate the entry of the BTH table that points to b
+ *      3.2     Invalidate tan eventual entry in the B-TLB that points to b
+ *      3.3     if (b'2 DUT entry LF field indicates the b holds a BTH table)
+ *      3.3.1       Invalidate DUT entries associated with b's children
+ *      3.4     else if (b's DUT entry dirty bit D==true)
+ *      3.4.1       Save b's contents into physical memory
+ *      4.  Install block level N+1
+ *      5.  if (++N < data block level) goto 1
  */
 void
 DbrcCache::insert(PacketPtr pkt)
 {
     // The packet should be aligned.
     assert(pkt->getAddr() ==  pkt->getBlockAddr(blockSize));
-    // The address should not be in the cache
-    assert(cacheStore.find(pkt->getAddr()) == cacheStore.end());
+    // The address should not be in the TLB
+    assert(cache_TLB.find(pkt->getAddr()) == cache_TLB.end());
     // The pkt should be a response
     assert(pkt->isResponse());
+
+    size_t i;
+    uint32_t smallest_r_idx = 0;
+    // Select DBA vitim block
+    while(i < MNA)
+    {
+        if!(!cache_DBA[VBIR].dut.lock)
+        {
+            if (!cache_DBA[VBIR].dut.valid ||
+                !cache_DBA[VBIR].dut.parent_valid ||
+                cache_DBA[VBIR].dut.reutilization == 0)
+            {
+                break;
+            }
+            else
+            {
+                if(smallest_r_idx == 0 || cache_DBA[VBIR].dut.reutilization < smallest_r_idx)
+                    smallest_r_idx = VBIR;
+                cache_DBA[VBIR].dut.reutilization = 0;
+            }
+        }
+        
+        VBIR++;
+        if(VBIR>capacity)
+            VBIR=0;
+        MNA++;
+    }
+
+    // Select smallest R value if no suitable found in MAximum NUmber of Attempts
+    if(i == MNA)
+        VBIR = smallest_r_idx;
+    
+
 
     if (cacheStore.size() >= capacity) {
         // Select random thing to evict. This is a little convoluted since we

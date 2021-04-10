@@ -272,7 +272,9 @@ class DbrcCache : public ClockedObject
 
     const unsigned target_BTH;
     const unsigned num_BTH;
-    const unsigned L0T_offset;
+    const unsigned TLB_size;
+    const unsigned MNA;
+    const unsigned L0T_offset; 
 
     /// Instantiation of the CPU-side port
     std::vector<CPUSidePort> cpuPorts;
@@ -294,7 +296,9 @@ class DbrcCache : public ClockedObject
     Tick missTime;
 
     /// TLB buffer. Unordered map since fully-associative
-    std::unordered_map<uint32_t, uint32_t> cache_TLB;
+    std::map<uint32_t, uint32_t> cache_TLB;
+
+    uint32_t VBIR; 
 
     BTH_entry* cache_L0T;
     DBA_entry* cache_DBA;
