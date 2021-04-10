@@ -3,6 +3,10 @@
 #include <cassert>
 #include <map>
 
+#include <iostream>
+#include <fstream>
+#include <string>
+
 typedef uint64_t Addr;
 
 typedef struct BTH_entry
@@ -39,7 +43,7 @@ const unsigned blockSize = 64;
 /// Number of blocks in the cache (size of cache / block size)
 const unsigned capacity = (1<<20)/blockSize;
 const unsigned target_BTH = 3;
-const unsigned num_BTH = 3;
+const unsigned num_BTH = 5;
 const unsigned TLB_size = (1<<16);
 const unsigned MNA = 5;
 uint32_t L0T_offset; 
@@ -50,6 +54,16 @@ uint32_t VBIR;
 BTH_entry* cache_L0T;
 DBA_entry* cache_DBA;
 
+uint32_t pow(uint32_t x, uint32_t e)
+{
+    uint32_t y = x;
+    for (size_t i = 1; i < e; i++)
+    {
+        y *= x;
+    }
+    return y;
+}
+
 bool CacheSearch(Addr block_addr, uint32_t &index)
 {
     uint32_t offset = blockSize/2;
@@ -58,15 +72,18 @@ bool CacheSearch(Addr block_addr, uint32_t &index)
     if(cache_L0T[block_addr/L0T_offset].V)
         index = cache_L0T[block_addr/L0T_offset].I;
     else
+    {
         index = -1;
         return false;
+    }
 
     // LNT Search
-    for (size_t i = 1; i < num_BTH; i++) {
+    for (size_t i = 1; i < num_BTH; i++) 
+    {
         BTH_entry* entries = (BTH_entry*)(cache_DBA[index].data);
-        if(entries[block_addr/(L0T_offset/(offset))].V)
+        uint32_t idx = (block_addr/(L0T_offset/(offset))) & (blockSize/2-1);
+        if(entries[idx].V)
         {
-            uint32_t idx = (block_addr/(L0T_offset/(offset))) & (blockSize/2-1);
             index = entries[idx].I;
             if(cache_DBA[index].dut.R < 32)
                 cache_DBA[index].dut.R++;
@@ -116,13 +133,14 @@ bool accessFunctional(Addr block_addr, uint8_t *data, bool isWrite)
         return false;
     }
     
+
     // Perform Operation on found cache block
     if (isWrite) {
         // Write the data into the block in the cache
-        cache_DBA[DBA_index].data = data;
+        cache_DBA[DBA_index].data[block_addr&(blockSize-1)] = *data;
     } else {
         // Read the data out of the cache block into the packet
-        data = cache_DBA[DBA_index].data;
+        *data = cache_DBA[DBA_index].data[block_addr&(blockSize-1)];
     } 
     // else {
     //     perror("Unknown packet type!");
@@ -148,7 +166,7 @@ bool accessFunctional(Addr block_addr, uint8_t *data, bool isWrite)
  */
 void insert(Addr address, uint8_t *data)
 {
-    uint32_t last_BTH;
+    uint32_t last_BTH, current_level;
     // The packet should be aligned.
     // assert(pkt->getAddr() ==  pkt->getBlockAddr(blockSize));
     // The pkt should be a response
@@ -156,105 +174,177 @@ void insert(Addr address, uint8_t *data)
     // Address should not be valid in the Cache. Set last valid BTH index.
     assert(!CacheSearch(address, last_BTH));
     // The address should not be in the TLB
-    assert(cache_TLB.find(address) == cache_TLB.end());
+    assert(cache_TLB.find(address/blockSize) == cache_TLB.end());
 
-    size_t i;
-    uint32_t smallest_r_idx = -1;
-    // Select DBA vitim block
-    while(i < MNA)
+    // Miss in L0T
+    if (last_BTH == -1)
     {
-        if(!cache_DBA[VBIR].dut.L)
+        // Invalidate DUT entries associated with b's children
+        if(cache_L0T[address/L0T_offset].V)
         {
-            if (!cache_DBA[VBIR].dut.V ||
-                !cache_DBA[VBIR].dut.PV ||
-                cache_DBA[VBIR].dut.R == 0)
-            {
-                break;
-            }
-            else
-            {
-                if(cache_DBA[VBIR].dut.R < smallest_r_idx)
-                    smallest_r_idx = VBIR;
-                cache_DBA[VBIR].dut.R = 0;
-            }
-            i++;
+            cache_DBA[cache_L0T->I].dut.PV = false;
         }
-        
-        VBIR++;
-        if(VBIR>capacity)
-            VBIR=0;
+
+        current_level = 0;
+    }
+    else
+    {
+        current_level = cache_DBA[last_BTH].dut.LF;
     }
 
-    // Select smallest R value if no suitable found in Maximum NUmber of Attempts
-    if(i == MNA)
-        VBIR = smallest_r_idx;
-    
-    // Make the BTH entry in level N point to b and set valid
-    ((BTH_entry*)(cache_DBA[last_BTH].data))->I = VBIR;
-    ((BTH_entry*)(cache_DBA[last_BTH].data))->V = true;
+    current_level++;
 
-    // If b was valid
-    if(cache_DBA[VBIR].dut.PV && cache_DBA[last_BTH].dut.V)
+    while(current_level <= num_BTH)
     {
-        // Invalidate the entry of the BTH table that points to b
-        cache_DBA[cache_DBA[VBIR].tt.PT].dut.V = false;
-
-        // Invalidate an eventual entry in the B-TLB that points to b
-        //TODO: BTH in TLB
-        auto it = cache_TLB.find(address/blockSize);
-        if (it != cache_TLB.end()) {
-            cache_TLB.erase(it);
+        size_t i = 0;
+        uint32_t smallest_r_idx = -1;
+        // Select DBA vitim block
+        while(i < MNA)
+        {
+            if(!cache_DBA[VBIR].dut.L)
+            {
+                if (!cache_DBA[VBIR].dut.V ||
+                    !cache_DBA[VBIR].dut.PV ||
+                    cache_DBA[VBIR].dut.R == 0)
+                {
+                    break;
+                }
+                else
+                {
+                    if(cache_DBA[VBIR].dut.R < smallest_r_idx)
+                        smallest_r_idx = VBIR;
+                    cache_DBA[VBIR].dut.R = 0;
+                }
+                i++;
+            }
+            
+            VBIR++;
+            if(VBIR>capacity)
+                VBIR=0;
         }
 
-        // if (b's DUT entry LF field indicates the b holds a BTH table)
-        if(cache_DBA[VBIR].dut.LF < num_BTH)
+        // Select smallest R value if no suitable found in Maximum Number of Attempts
+        if(i == MNA)
+            VBIR = smallest_r_idx;
+        
+        if (current_level == 1)
         {
-            for (size_t i = 0; i < blockSize/2; i++)
+            // Make the BTH entry in L0T point to b and set valid
+            cache_L0T[address/L0T_offset].I = VBIR;
+            cache_L0T[address/L0T_offset].V = true;
+        }
+        else
+        {
+            // Make the BTH entry in level N point to b and set valid
+            ((BTH_entry*)(cache_DBA[last_BTH].data))[(address/(L0T_offset/pow(blockSize/2, current_level-1)))&(blockSize/2-1)].I = VBIR;
+            ((BTH_entry*)(cache_DBA[last_BTH].data))[(address/(L0T_offset/pow(blockSize/2, current_level-1)))&(blockSize/2-1)].V = true;
+        }
+
+        // If b was valid
+        if(cache_DBA[VBIR].dut.PV && cache_DBA[VBIR].dut.V)
+        {
+            // Invalidate the entry of the BTH table that points to b
+            if(cache_DBA[VBIR].dut.LF == 1)
+                cache_L0T[address/L0T_offset].V = false;
+            else
+                cache_DBA[cache_DBA[VBIR].tt.PT].dut.V = false;
+
+            // If is data, invalidate an eventual entry in the B-TLB that points to b
+            //TODO: BTH in TLB
+            if (cache_DBA[VBIR].dut.LF == num_BTH)
             {
-                // Invalidate DUT entries associated with b's children
-                if(((BTH_entry*)(cache_DBA[VBIR].data))->V)
-                {
-                    cache_DBA[((BTH_entry*)(cache_DBA[VBIR].data))->I].dut.PV = false;
+                auto it = cache_TLB.find(address/blockSize);
+                if (it != cache_TLB.end()) {
+                    cache_TLB.erase(it);
                 }
             }
+
+            // if (b's DUT entry LF field indicates the b holds a BTH table)
+            if(cache_DBA[VBIR].dut.LF < num_BTH)
+            {
+                for (size_t i = 0; i < blockSize/2; i++)
+                {
+                    // Invalidate DUT entries associated with b's children
+                    if(((BTH_entry*)(cache_DBA[VBIR].data))->V)
+                    {
+                        cache_DBA[((BTH_entry*)(cache_DBA[VBIR].data))->I].dut.PV = false;
+                    }
+                }
+            }
+            // else if (b's DUT entry dirty bit D==true)
+            else if(cache_DBA[VBIR].dut.D)
+            {
+                // Save b's contents into physical memory
+                // Create a new request-packet pair
+                // RequestPtr req = std::make_shared<Request>(
+                //     cache_DBA[VBIR].tt.TAG, blockSize, 0, 0);
+
+                // PacketPtr new_pkt = new Packet(req, MemCmd::WritebackDirty, blockSize);
+                // new_pkt->dataDynamic(cache_DBA[VBIR].data); // This will be deleted later
+
+                // DPRINTF(DbrcCache, "Writing packet back %s\n", pkt->print());
+                // // Send the write to memory
+                // memPort.sendPacket(new_pkt);
+            }
         }
-        // else if (b's DUT entry dirty bit D==true)
-        else if(cache_DBA[VBIR].dut.D)
+
+        // Install block level N+1
+        free(cache_DBA[VBIR].data);
+        if (current_level < num_BTH)
         {
-            // Save b's contents into physical memory
-            // Create a new request-packet pair
-            // RequestPtr req = std::make_shared<Request>(
-            //     cache_DBA[VBIR].tt.TAG, blockSize, 0, 0);
-
-            // PacketPtr new_pkt = new Packet(req, MemCmd::WritebackDirty, blockSize);
-            // new_pkt->dataDynamic(cache_DBA[VBIR].data); // This will be deleted later
-
-            // DPRINTF(DbrcCache, "Writing packet back %s\n", pkt->print());
-            // // Send the write to memory
-            // memPort.sendPacket(new_pkt);
+            // Allocate BTH_entry
+            cache_DBA[VBIR].data = (uint8_t*)(calloc(blockSize/2, sizeof(BTH_entry)));
         }
+        else
+        {
+            // Allocate data block
+            cache_DBA[VBIR].data = (uint8_t*)(calloc(blockSize, sizeof(uint8_t)));
+        }
+        
+        cache_DBA[VBIR].dut.V = true;
+        cache_DBA[VBIR].dut.PV = true;
+        cache_DBA[VBIR].dut.LF = current_level;
+        cache_DBA[VBIR].dut.R = 1;
+        if (current_level == 1)
+            cache_DBA[VBIR].tt.PT = address/L0T_offset;
+        else
+            cache_DBA[VBIR].tt.PT = last_BTH;
+
+        last_BTH = VBIR;
+        current_level++;
+        VBIR++;
+        if(VBIR>capacity)
+                VBIR=0;
+
+        // if (++N < data block level) goto 1
     }
 
-    // Install block level N+1
-    // free(cache_DBA[VBIR].data);
 
-
-    // if (++N < data block level) goto 1
     
     // DPRINTF(DbrcCache, "Inserting %s\n", pkt->print());
     // DDUMP(DbrcCache, pkt->getConstPtr<uint8_t>(), blockSize);
 
-    // // Allocate space for the cache block data
-    // uint8_t *data = new uint8_t[blockSize];
+    cache_DBA[VBIR-1].tt.TAG = address/blockSize;
 
-    // // Insert the data and address into the cache store
-    // cacheStore[pkt->getAddr()] = data;
+    cache_DBA[VBIR-1].data[(address&(blockSize-1))] = *data;
+
+    // Write cache find to TLB
+    if (cache_TLB.size() > TLB_size)
+    {
+        auto it = cache_TLB.begin();
+        cache_TLB.erase(it);
+    }
+    
+    // TODO: implement storing BTH or data in TLB
+    cache_TLB[address/blockSize] = VBIR-1;
 
     // // Write the data into the cache
-    // pkt->writeDataToBlock(data, blockSize);
+    // pkt->writeDataToBlock(cache_DBA[VBIR].data, blockSize);
+
+
 }
 
-int main()
+void init()
 {
     VBIR = 0;
 
@@ -263,7 +353,53 @@ int main()
         L0T_offset *= (blockSize/2);
     cache_L0T = new BTH_entry[(1UL<<32)/(L0T_offset)];
     cache_DBA = new DBA_entry[capacity];
+}
 
+void clean()
+{
+    for (size_t i = 0; i < capacity; i++)
+    {
+        free(cache_DBA[i].data);
+    }
+    
     delete [] cache_L0T;
     delete [] cache_DBA;
+}
+
+int main()
+{
+    init();
+
+    uint32_t addr = 0x2022208;
+    uint8_t data = 42;
+    uint8_t data2 = 0;
+
+    // insert(addr, &data);
+    // accessFunctional(addr&(!(blockSize-1)), &data2, true);
+
+
+    std::ifstream trace("trace");
+    std::string address;
+    bool success;
+    uint64_t misses = 0;
+    uint64_t total = 0;
+
+    while (std::getline(trace, address)) {
+        addr = std::stoul(address.substr(2), 0 ,16);
+        if(total==135)
+            uint32_t x = 0;
+        total++;
+
+        if (!accessFunctional(addr, &data2, false))
+        {
+            insert(addr, &data);
+            success = accessFunctional(addr, &data2, false);
+            assert(data==data2);
+            misses++;
+        }
+    }
+
+    trace.close();
+
+    clean();
 }
