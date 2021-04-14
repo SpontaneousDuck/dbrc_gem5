@@ -3,7 +3,7 @@ FROM ubuntu:20.04
 # get dependencies
 ENV DEBIAN_FRONTEND noninteractive
 RUN apt-get update && \
-    apt install -y build-essential git m4 scons zlib1g zlib1g-dev libprotobuf-dev protobuf-compiler libprotoc-dev libgoogle-perftools-dev python3-dev python3-six python-is-python3 libboost-all-dev pkg-config && \
+    apt install -y build-essential git m4 scons zlib1g zlib1g-dev libprotobuf-dev protobuf-compiler libprotoc-dev libgoogle-perftools-dev python3-dev python3-six python3-pydot python-is-python3 libboost-all-dev pkg-config && \
     apt-get clean
 
 # checkout repo with mercurial

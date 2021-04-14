@@ -10,28 +10,29 @@
 
 typedef struct
 {
-  bool valid;
-  uint32_t index;
+  bool V;
+  uint32_t I;
 } BTH_entry;
 
 typedef struct 
 {
-  bool valid;
-  bool dirty;
-  bool lock;
-  uint8_t level;
-  bool parent_valid;
-  uint8_t reutilization;
+  bool V;
+  bool D;
+  bool L;
+  uint8_t LF;
+  bool PV;
+  uint8_t R;
 } DUT_entry;
 
 typedef struct
 {
-  uint32_t tag;
-  uint8_t parent_table;
+  uint32_t TAG;
+  uint8_t PT;
 } TT_entry;
 
 typedef struct
 {
+  BTH_entry* BTH;
   uint8_t* data;
   DUT_entry dut;
   TT_entry tt;
@@ -232,6 +233,8 @@ class DbrcCache : public ClockedObject
      */
     void accessTiming(PacketPtr pkt);
 
+    bool CacheSearch(Addr block_addr, uint32_t &index);
+
     /**
      * This is where we actually update / read from the cache. This function
      * is executed on both timing and functional accesses.
@@ -274,7 +277,7 @@ class DbrcCache : public ClockedObject
     const unsigned num_BTH;
     const unsigned TLB_size;
     const unsigned MNA;
-    const unsigned L0T_offset; 
+    uint32_t L0T_offset; 
 
     /// Instantiation of the CPU-side port
     std::vector<CPUSidePort> cpuPorts;
@@ -296,10 +299,9 @@ class DbrcCache : public ClockedObject
     Tick missTime;
 
     /// TLB buffer. Unordered map since fully-associative
-    std::map<uint32_t, uint32_t> cache_TLB;
-
+    std::unordered_map<uint32_t, uint32_t> cache_TLB;
+    std::vector<uint32_t> cache_TLB_order;
     uint32_t VBIR; 
-
     BTH_entry* cache_L0T;
     DBA_entry* cache_DBA;
 

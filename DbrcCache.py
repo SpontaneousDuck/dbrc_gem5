@@ -16,3 +16,8 @@ class DbrcCache(ClockedObject):
     size = Param.MemorySize('16kB', "The size of the cache")
 
     system = Param.System(Parent.any, "The system this cache is part of")
+
+    num_BTH = Param.Unsigned(3, "The number of BTH tables used")
+    target_BTH = Param.Unsigned(3, "Target BTH for TLB")
+    TLB_size = Param.Unsigned(65536, "Entries in TLB")
+    MNA = Param.Unsigned(5, "Maximum number of attempts for replacement algorithm")
