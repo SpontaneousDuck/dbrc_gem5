@@ -4,23 +4,34 @@
 #include "debug/DbrcCache.hh"
 #include "sim/system.hh"
 
-DbrcCache::DbrcCache(const DbrcCacheParams &params) :
+static uint32_t pow(uint32_t x, uint32_t e)
+{
+    uint32_t y = x;
+    for (size_t i = 1; i < e; i++)
+    {
+        y *= x;
+    }
+    return y;
+}
+
+DbrcCache::DbrcCache(DbrcCacheParams *params) :
     ClockedObject(params),
-    latency(params.latency),
-    blockSize(params.system->cacheLineSize()),
-    capacity(params.size / blockSize),
-    target_BTH(params.target_BTH),
-    num_BTH(params.num_BTH),
-    TLB_size(params.TLB_size),
-    MNA(params.MNA),
-    memPort(params.name + ".mem_side", this),
+    latency(params->latency),
+    blockSize(params->system->cacheLineSize()),
+    capacity(params->size / blockSize),
+    target_BTH(params->target_BTH),
+    num_BTH(params->num_BTH),
+    TLB_size(params->TLB_size),
+    // TLB_size((0x100000000/blockSize)/(pow(blockSize/2, num_BTH-1))),
+    MNA(params->MNA),
+    memPort(params->name + ".mem_side", this),
     blocked(false), originalPacket(nullptr), waitingPortId(-1), stats(this)
 {
     // Since the CPU side ports are a vector of ports, create an instance of
     // the CPUSidePort for each connection. This member of params is
     // automatically created depending on the name of the vector port and
     // holds the number of connections to this port name
-    for (int i = 0; i < params.port_cpu_side_connection_count; ++i) {
+    for (int i = 0; i < params->port_cpu_side_connection_count; ++i) {
         cpuPorts.emplace_back(name() + csprintf(".cpu_side[%d]", i), i, this);
     }
 
@@ -664,12 +675,18 @@ DbrcCache::sendRangeChange() const
 
 DbrcCache::DbrcCacheStats::DbrcCacheStats(Stats::Group *parent)
       : Stats::Group(parent),
-      ADD_STAT(hits, UNIT_COUNT, "Number of hits"),
-      ADD_STAT(misses, UNIT_COUNT, "Number of misses"),
-      ADD_STAT(missLatency, UNIT_TICK, "Ticks for misses to the cache"),
-      ADD_STAT(hitRatio, UNIT_RATIO,
+      ADD_STAT(hits, "Number of hits"),
+      ADD_STAT(misses, "Number of misses"),
+      ADD_STAT(missLatency, "Ticks for misses to the cache"),
+      ADD_STAT(hitRatio,
                "The ratio of hits to the total accesses to the cache",
                hits / (hits + misses))
 {
     missLatency.init(16); // number of buckets
+}
+
+DbrcCache*
+DbrcCacheParams::create()
+{
+    return new DbrcCache(this);
 }

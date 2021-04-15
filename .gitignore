@@ -1,3 +1,5 @@
 output/*
 !.gitkeep
 .vscode
+__pycache__
+disk-image

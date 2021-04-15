@@ -320,7 +320,7 @@ class DbrcCache : public ClockedObject
 
     /** constructor
      */
-    DbrcCache(const DbrcCacheParams &params);
+    DbrcCache(DbrcCacheParams *params);
 
     ~DbrcCache();
 
